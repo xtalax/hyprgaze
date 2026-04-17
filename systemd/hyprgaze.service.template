@@ -1,0 +1,19 @@
+[Unit]
+Description=hyprgaze — gaze-driven window focus daemon
+Documentation=file://__REPO__/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO__
+ExecStart=__REPO__/.venv/bin/hyprgaze run
+Restart=on-failure
+RestartSec=3
+# Give the compositor + camera a moment after login before first start.
+ExecStartPre=/bin/sh -c 'sleep 1'
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target

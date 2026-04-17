@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Toggle the hyprgaze user service on/off.
+set -euo pipefail
+
+if systemctl --user is-active --quiet hyprgaze.service; then
+    systemctl --user stop hyprgaze.service
+    notify-send -t 1500 -a hyprgaze "hyprgaze" "paused" 2>/dev/null || true
+else
+    systemctl --user start hyprgaze.service
+    notify-send -t 1500 -a hyprgaze "hyprgaze" "active" 2>/dev/null || true
+fi

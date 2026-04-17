@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Waybar custom module: emit JSON describing hyprgaze state.
+# Exposes class "active" / "inactive" for CSS styling.
+
+if systemctl --user is-active --quiet hyprgaze.service; then
+    printf '{"text":"\uf06e","alt":"active","class":"active","tooltip":"hyprgaze: on — left-click to pause, right-click to recalibrate"}\n'
+else
+    printf '{"text":"\uf070","alt":"inactive","class":"inactive","tooltip":"hyprgaze: off — left-click to activate, right-click to recalibrate"}\n'
+fi

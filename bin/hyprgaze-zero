@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Quick head-pose re-baseline: stare at center for ~3 s. Stops the daemon
+# while the zero-capture owns the camera, then restarts if it was running.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+
+was_active=0
+if systemctl --user is-active --quiet hyprgaze.service; then
+    was_active=1
+    systemctl --user stop hyprgaze.service
+fi
+
+notify-send -t 2500 -a hyprgaze "hyprgaze" "Re-zero — stare at screen center" \
+    2>/dev/null || true
+
+set +e
+"$REPO/.venv/bin/hyprgaze" zero > /tmp/hyprgaze-zero.log 2>&1
+rc=$?
+set -e
+
+if [ "$rc" -eq 0 ]; then
+    notify-send -t 2000 -a hyprgaze "hyprgaze" "Baseline updated" 2>/dev/null || true
+else
+    notify-send -t 5000 -a hyprgaze "hyprgaze" \
+        "Re-zero failed — see /tmp/hyprgaze-zero.log" 2>/dev/null || true
+fi
+
+if [ "$was_active" = "1" ]; then
+    systemctl --user start hyprgaze.service
+fi
+exit "$rc"

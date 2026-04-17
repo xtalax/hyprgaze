@@ -201,17 +201,33 @@ fi
 HYPR_BINDS="$HOME/.config/hypr/bindings.conf"
 [ -f "$HYPR_BINDS" ] || HYPR_BINDS="$HOME/.config/hypr/hyprland.conf"
 
-if [ -f "$HYPR_BINDS" ] && ask_yn "Install Super+Alt+F keybind to toggle hyprgaze (replaces any existing binding)?"; then
-    if grep -q "hyprgaze-toggle" "$HYPR_BINDS"; then
-        note "keybind already present in $HYPR_BINDS"
-    else
-        say "appending keybind to $HYPR_BINDS"
+if [ -f "$HYPR_BINDS" ] && ask_yn "Install Hyprland keybinds (Super+Alt+F = toggle, Super+Alt+Z = re-zero)?"; then
+    appended=0
+    if ! grep -q "hyprgaze-toggle" "$HYPR_BINDS"; then
+        say "appending toggle keybind to $HYPR_BINDS"
         cat >> "$HYPR_BINDS" <<EOF
 
 # hyprgaze — toggle gaze-driven window focus daemon
 unbind = SUPER ALT, F  # replace any existing binding
 bindd = SUPER ALT, F, Toggle hyprgaze, exec, $REPO/bin/hyprgaze-toggle
 EOF
+        appended=1
+    else
+        note "toggle keybind already present in $HYPR_BINDS"
+    fi
+    if ! grep -q "hyprgaze-zero" "$HYPR_BINDS"; then
+        say "appending re-zero keybind to $HYPR_BINDS"
+        cat >> "$HYPR_BINDS" <<EOF
+
+# hyprgaze — quick head-pose re-baseline (stare at screen center, ~3 s)
+unbind = SUPER ALT, Z  # replace any existing binding
+bindd = SUPER ALT, Z, Re-zero hyprgaze, exec, $REPO/bin/hyprgaze-zero
+EOF
+        appended=1
+    else
+        note "re-zero keybind already present in $HYPR_BINDS"
+    fi
+    if [ "$appended" -eq 1 ]; then
         hyprctl reload >/dev/null 2>&1 && note "hyprctl reload ok" || warn "could not hyprctl reload (start Hyprland to apply)"
     fi
 fi
@@ -246,10 +262,10 @@ hyprgaze installed at $REPO
 
 Daily use
   • Left-click the 👁 waybar widget to pause / resume.
-  • Right-click the widget to run a full recalibration.
-  • Super+Alt+F also toggles pause/resume.
-  • Re-zero head baseline (quick, 3 s) if posture drifts:
-        $HYPRGAZE_BIN zero
+  • Right-click the widget to run a full recalibration (~30 s).
+  • Super+Alt+F  → toggle pause/resume.
+  • Super+Alt+Z  → quick head-pose re-zero (~3 s).
+                   Use whenever posture shifts and gaze feels off.
 
 Service control
   Stop:     systemctl --user stop hyprgaze
@@ -258,12 +274,15 @@ Service control
   Logs:     journalctl --user -u hyprgaze -f
   Disable:  systemctl --user disable --now hyprgaze
 
-Change the keybind
+Change the keybinds
   Edit ~/.config/hypr/bindings.conf (or whichever of your hypr files has
-  the bindd/bind line pointing at \$REPO/bin/hyprgaze-toggle). Example:
+  the bindd lines pointing at $REPO/bin/hyprgaze-*). Examples:
 
         unbind = SUPER ALT, F
         bindd = SUPER CTRL, G, Toggle hyprgaze, exec, $REPO/bin/hyprgaze-toggle
+
+        unbind = SUPER ALT, Z
+        bindd = SUPER CTRL, Z, Re-zero hyprgaze, exec, $REPO/bin/hyprgaze-zero
 
   Then:   hyprctl reload
 

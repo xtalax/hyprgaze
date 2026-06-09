@@ -232,10 +232,11 @@ cat ~/.config/hyprgaze/calibration.json     # sanity-check a fresh calibration
 ## Glasses IMU tracker (`--tracker glasses`)
 
 Alternative input to the webcam: drive head yaw/pitch from an AR-glasses 6-axis
-IMU (target: **XREAL Air 2 Pro**, an XRLinuxDriver-supported pair). The whole
-pipeline downstream of the tracker (`Calibration.apply` → filter → dwell →
-focus) is **source-agnostic**, so the IMU is just another producer of
-`(yaw, pitch)`. Same focus-dwell model — no continuous warp (respects the Don't).
+IMU (target: **Viture Luma Ultra** — 👍 driver-recommended, official VITURE Linux
+SDK, built-in mic + electrochromic dimming). The whole pipeline downstream of the
+tracker (`Calibration.apply` → filter → dwell → focus) is **source-agnostic**, so
+the IMU is just another producer of `(yaw, pitch)`. Same focus-dwell model — no
+continuous warp (respects the Don't).
 
 Why it matters here: the daily user is reclined/bedbound. A glasses IMU works
 lying down with no webcam line-of-sight to the face, lower latency, no lighting

@@ -1,4 +1,4 @@
-"""6-axis IMU head tracking from AR glasses (XRLinuxDriver-supported, e.g. XREAL Air 2 Pro).
+"""6-axis IMU head tracking from AR glasses (XRLinuxDriver-supported, e.g. Viture Luma Ultra).
 
 An alternative to the webcam `GazeTracker`: produce head yaw/pitch from the
 glasses' gyro + accelerometer — the same (yaw, pitch) signal the rest of the
@@ -18,8 +18,8 @@ real 6-axis IMU, which makes backend 1 below the easy, working path.)
 --------------------------------------------------------------------------
 TWO BACKENDS:
 
-  1. XRDriverHeadTracker — PRIMARY for XRLinuxDriver-supported glasses (XREAL /
-     Viture / Rokid / RayNeo Air 2–3s). The driver decodes the device + fuses
+  1. XRDriverHeadTracker — PRIMARY for driver-supported glasses (Viture / Rokid /
+     RayNeo Air 2–3s; chosen pair: Viture Luma Ultra). The driver decodes the device + fuses
      gyro/accel and broadcasts a *fused* orientation over a shared-memory IPC
      (enable with output_mode=external_only); we just read it — no decode or
      fusion duplicated here. `_read_orientation` reads that buffer (TODO: confirm
@@ -49,9 +49,11 @@ import numpy as np
 from .sample import GazeSample
 
 # (idVendor, idProduct) of the glasses' IMU HID interface — only for the hidraw
-# fallback (backend 2). Override at runtime via HYPRGAZE_IMU_IDS="3318:0424".
+# fallback (backend 2). Viture's vendor id is 0x35ca (its mic enumerates as
+# 35ca:1102); find the IMU interface PID with the steps above, or override via
+# HYPRGAZE_IMU_IDS="35ca:xxxx". Prefer backend 1 — Viture has an official Linux SDK.
 GLASSES_IMU_IDS: tuple[tuple[int, int], ...] = (
-    # (0x3318, 0x0424),  # XREAL Air 2 Pro — TODO verify PID with the device
+    # (0x35ca, 0x0000),  # Viture Luma Ultra IMU — TODO confirm PID with the device
 )
 
 
@@ -276,7 +278,7 @@ XRDRIVER_IMU_PATHS: tuple[str, ...] = (
 class XRDriverHeadTracker:
     """Head tracker that consumes XRLinuxDriver's already-fused orientation.
 
-    PRIMARY path for driver-supported glasses (XREAL Air 2 Pro et al.): the
+    PRIMARY path for driver-supported glasses (Viture Luma Ultra et al.): the
     driver decodes the device + fuses gyro/accel and broadcasts orientation, and
     we just read euler angles. recenter() is applied as a yaw/pitch offset here.
 

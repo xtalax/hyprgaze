@@ -12,6 +12,7 @@ import numpy as np
 from .calibration import CALIB_PATH, Calibration, run_calibration, run_zero
 from .filter import OneEuroFilter
 from .sources import CameraSource, ImuSource
+from . import niri
 from .warp import (
     Monitor,
     ScreenBox,
@@ -44,13 +45,20 @@ def _gaze_to_screen(
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    mons = get_monitors()
-    if not mons:
-        print("No monitors reported by hyprctl.", file=sys.stderr)
-        return 1
+    comp = args.compositor if args.compositor != "auto" else niri.detect_compositor()
+    if comp == "niri":
+        mons = niri.get_outputs()
+        if not mons:
+            print("No outputs from niri (is it running / NIRI_SOCKET set?).", file=sys.stderr)
+            return 1
+    else:
+        mons = get_monitors()
+        if not mons:
+            print("No monitors reported by hyprctl.", file=sys.stderr)
+            return 1
     box = bounding_box(mons)
     print(
-        f"Screen bounding box: x {box.x0}..{box.x1} ({box.w}px),"
+        f"Compositor: {comp}. Screen bounding box: x {box.x0}..{box.x1} ({box.w}px),"
         f" y {box.y0}..{box.y1} ({box.h}px)",
         flush=True,
     )
@@ -122,6 +130,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     dwell_sec = args.dwell_ms / 1000.0
     state_refresh_sec = 0.25
+    # niri focus model: warp cursor on dwell, focus-follows-mouse does the rest.
+    focuser = niri.NiriFocuser(dwell_sec=dwell_sec)
 
     # Cached hyprctl state.
     last_state_t = 0.0
@@ -164,41 +174,50 @@ def _cmd_run(args: argparse.Namespace) -> int:
             sx_i = int(sx_f)
             sy_i = int(sy_f)
 
-            # Refresh hyprctl state periodically.
-            if t - last_state_t > state_refresh_sec:
-                try:
-                    monitors_live = get_monitors()
-                    clients = get_clients()
-                    aw = get_active_window()
-                    active_addr = aw["address"] if aw else None
-                    last_state_t = t
-                except Exception:
-                    pass  # keep stale data
-
-            win_under = window_at(
-                sx_f, sy_f, clients, monitors_live,
-                exclude_titles=("hyprgaze",),
-            )
-
-            if win_under is None or win_under.get("address") == active_addr:
-                candidate_addr = None
-                candidate_class = ""
-            else:
-                addr = win_under.get("address")
-                if addr != candidate_addr:
-                    candidate_addr = addr
-                    candidate_since = t
-                    candidate_class = win_under.get("class", "")
-                elif t - candidate_since >= dwell_sec:
-                    cx, cy = window_center(win_under)
+            if comp == "niri":
+                # niri owns layout: warp the cursor on dwell and let
+                # focus-follows-mouse focus whatever is under it.
+                tgt = focuser.update(t, sx_f, sy_f)
+                if tgt is not None:
                     if not args.dry_run:
-                        move_cursor(cx, cy)
+                        niri.move_cursor(*tgt)
                     stat_warps += 1
-                    # Assume our warp will take effect; suppress re-dwell until
-                    # the state refresh confirms the new active.
-                    active_addr = addr
+            else:
+                # Refresh hyprctl state periodically.
+                if t - last_state_t > state_refresh_sec:
+                    try:
+                        monitors_live = get_monitors()
+                        clients = get_clients()
+                        aw = get_active_window()
+                        active_addr = aw["address"] if aw else None
+                        last_state_t = t
+                    except Exception:
+                        pass  # keep stale data
+
+                win_under = window_at(
+                    sx_f, sy_f, clients, monitors_live,
+                    exclude_titles=("hyprgaze",),
+                )
+
+                if win_under is None or win_under.get("address") == active_addr:
                     candidate_addr = None
                     candidate_class = ""
+                else:
+                    addr = win_under.get("address")
+                    if addr != candidate_addr:
+                        candidate_addr = addr
+                        candidate_since = t
+                        candidate_class = win_under.get("class", "")
+                    elif t - candidate_since >= dwell_sec:
+                        cx, cy = window_center(win_under)
+                        if not args.dry_run:
+                            move_cursor(cx, cy)
+                        stat_warps += 1
+                        # Assume our warp will take effect; suppress re-dwell until
+                        # the state refresh confirms the new active.
+                        active_addr = addr
+                        candidate_addr = None
+                        candidate_class = ""
 
         if debug_win is not None:
             # IMU mode has no camera frame — draw on a blank canvas.
@@ -302,6 +321,9 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
                    help="input device: webcam gaze (default) or glasses 6-axis IMU")
     p.add_argument("--imu-no-driver", action="store_true",
                    help="glasses mode: bypass XRLinuxDriver, read hidraw directly")
+    p.add_argument("--compositor", choices=["auto", "hyprland", "niri"], default="auto",
+                   help="auto-detect (NIRI_SOCKET/HYPRLAND_*) or force; niri uses "
+                        "cursor-warp + focus-follows-mouse instead of window_at")
     p.add_argument("--camera", type=int, default=0)
     p.add_argument("--debug", action="store_true",
                    help="show webcam preview with gaze + dwell overlay")

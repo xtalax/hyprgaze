@@ -274,3 +274,38 @@ backend 1 the easy working path.
 
 Calibration: glasses use the linear default mapping for now (`cal=None` in
 glasses mode); affine calibration for the IMU profile is a follow-up.
+
+## niri compositor support (`--compositor niri`)
+
+Compositor is auto-detected (`NIRI_SOCKET` → niri, `HYPRLAND_INSTANCE_SIGNATURE`
+→ hyprland); override with `--compositor`. niri owns window layout and exposes
+no per-window pixel rects, so its path differs from `warp.py`:
+
+    map gaze → screen → dwell-settle → move cursor (ydotool) → niri's
+    focus-follows-mouse focuses whatever is under it.
+
+- `niri.py` — `parse_outputs` (monitor geometry from `niri msg --json outputs`;
+  reuses warp's `Monitor`/`ScreenBox`/`bounding_box`), `move_cursor` (ydotool
+  absolute), `NiriFocuser` (dwell + move-threshold policy; unit-tested),
+  `detect_compositor`. The niri hot path needs **no** window list / IPC poll —
+  outputs once for the bounding box, then cursor warps.
+- `warp.py` (Hyprland) is untouched and still used when on Hyprland — the same
+  binary works on both machines via auto-detect.
+- `__main__` branches the focus decision on `comp`; everything else (source,
+  tracker, calibration, filter, debug, stats) is shared.
+
+Required `~/.config/niri/config.kdl`:
+
+    input { focus-follows-mouse max-scroll-amount="0%" }
+    output "DP-1" { mode "1920x1080@120"; scale 1.0 }    // glasses connector
+    binds {
+        Mod+D { spawn "sh" "-c" "kill -USR1 $(pgrep -f 'hyprgaze run')"; }  // recenter
+        // bind your hyprwhspr trigger here too
+    }
+
+TODO (verify on the target — can't run niri offline): the exact `niri msg --json
+outputs` shape and ydotool's absolute-coord units; recalibrate on niri so the
+affine absorbs any coordinate-space quirk.
+
+Naming: **"hyprgaze" is now a slight misnomer** (it runs on niri too). Left as-is
+to avoid churning the binary/service/repo name; renaming is optional.

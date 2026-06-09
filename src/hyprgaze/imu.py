@@ -1,38 +1,40 @@
-"""6-axis IMU head tracking from AR glasses (e.g. RayNeo Air 4 Pro).
+"""6-axis IMU head tracking from AR glasses (XRLinuxDriver-supported, e.g. XREAL Air 2 Pro).
 
-An alternative to the webcam `GazeTracker`: instead of estimating gaze from a
-camera, read the glasses' built-in gyro + accelerometer over hidraw and produce
-head yaw/pitch — the same (yaw, pitch) signal the rest of the pipeline already
-consumes (Calibration.apply → filter → dwell → focus).
+An alternative to the webcam `GazeTracker`: produce head yaw/pitch from the
+glasses' gyro + accelerometer — the same (yaw, pitch) signal the rest of the
+pipeline already consumes (Calibration.apply → filter → dwell → focus).
 
 Why this is the better modality for a reclined / bedbound user:
   • Works lying down — no webcam needing line-of-sight to the face.
   • Lower latency than MediaPipe + solvePnP, no lighting dependence.
-  • No dependency on XRLinuxDriver (which does NOT support the Air 4 Pro).
 
 Sign convention matches tracker.py:  yaw > 0 = head turned to user's RIGHT,
 pitch > 0 = looking UP. Output is head-only (no iris term); iris_* = 0.
 
+(History: the RayNeo Air 4 Pro was dropped — no accelerometer/magnetometer, so
+gyro-only and too drifty. Switched to an XRLinuxDriver-supported pair with a
+real 6-axis IMU, which makes backend 1 below the easy, working path.)
+
 --------------------------------------------------------------------------
-TWO BACKENDS (both hardware-gated; the glasses are not here yet):
+TWO BACKENDS:
 
-  1. XRDriverHeadTracker — PREFERRED once XRLinuxDriver supports the Air 4 Pro.
-     Plan: add Air 4 Pro support upstream to wheaney/XRLinuxDriver when the
-     glasses arrive. The driver then publishes a *fused* orientation we read
-     directly — no protocol decode or fusion duplicated here. Confirm the
-     driver's IMU output path/format during that work (TODO in the class).
+  1. XRDriverHeadTracker — PRIMARY for XRLinuxDriver-supported glasses (XREAL /
+     Viture / Rokid / RayNeo Air 2–3s). The driver decodes the device + fuses
+     gyro/accel and broadcasts a *fused* orientation over a shared-memory IPC
+     (enable with output_mode=external_only); we just read it — no decode or
+     fusion duplicated here. `_read_orientation` reads that buffer (TODO: confirm
+     the /dev/shm path + struct against the installed driver version).
 
-  2. ImuHeadTracker (hidraw + ComplementaryFilter) — independent fallback that
-     reads raw gyro/accel and fuses them here. To finish the raw decode:
-       a. Plug in the Air 4 Pro, find its hidraw node:
+  2. ImuHeadTracker (hidraw + ComplementaryFilter) — fallback for unsupported
+     glasses, or to run driver-free. To wire the raw decode:
+       a. find the IMU hidraw node:
             grep -l HID_ID /sys/class/hidraw/*/device/uevent   # note vid:pid
-       b. Capture raw reports:  sudo cat /dev/hidrawN | xxd | head
-       c. Decode the gyro/accel layout. Reference for a sibling device:
-            github.com/verncat/RayNeo-Air-3S-Pro-OpenVR (Air 4 Pro may match).
+       b. capture reports:  sudo cat /dev/hidrawN | xxd | head
+       c. fill in HidGlassesReport._decode (int16 gyro/accel triplets + scale).
 
   The fusion math (ComplementaryFilter) is device-independent and unit-tested;
-  only the byte decode + VID/PID (backend 2) and the driver IPC path
-  (backend 1) need the hardware.
+  the byte decode + VID/PID (backend 2) and the exact /dev/shm layout
+  (backend 1) are confirmed against the device at bring-up.
 --------------------------------------------------------------------------
 """
 from __future__ import annotations
@@ -46,10 +48,10 @@ import numpy as np
 
 from .sample import GazeSample
 
-# (idVendor, idProduct) of the glasses' IMU HID interface. PLACEHOLDER — fill in
-# from step 1 above, or override at runtime via HYPRGAZE_IMU_IDS="1bbb:af50".
-RAYNEO_IDS: tuple[tuple[int, int], ...] = (
-    # (0x35ca, 0x1011),  # RayNeo Air 4 Pro — TODO verify
+# (idVendor, idProduct) of the glasses' IMU HID interface — only for the hidraw
+# fallback (backend 2). Override at runtime via HYPRGAZE_IMU_IDS="3318:0424".
+GLASSES_IMU_IDS: tuple[tuple[int, int], ...] = (
+    # (0x3318, 0x0424),  # XREAL Air 2 Pro — TODO verify PID with the device
 )
 
 
@@ -141,7 +143,7 @@ class ComplementaryFilter:
         self._pitch0 = self.pitch
 
 
-def find_rayneo_hidraw() -> str | None:
+def find_glasses_hidraw() -> str | None:
     """Return the /dev/hidrawN path for the glasses IMU, or None.
 
     Honors HYPRGAZE_IMU_IDS='vid:pid[,vid:pid]' and HYPRGAZE_IMU_HIDRAW=/dev/hidrawN.
@@ -150,7 +152,7 @@ def find_rayneo_hidraw() -> str | None:
     if forced and os.path.exists(forced):
         return forced
 
-    ids = list(RAYNEO_IDS)
+    ids = list(GLASSES_IMU_IDS)
     env_ids = os.environ.get("HYPRGAZE_IMU_IDS")
     if env_ids:
         for tok in env_ids.split(","):
@@ -186,10 +188,10 @@ def find_rayneo_hidraw() -> str | None:
     return None
 
 
-class RayNeoReport:
-    """Decode a raw hidraw report into (gyro rad/s, accel) arrays.
+class HidGlassesReport:
+    """Decode a raw hidraw report into (gyro rad/s, accel) arrays (backend 2).
 
-    PLACEHOLDER decode — see the HARDWARE-GATED TODO at module top. Replace
+    PLACEHOLDER decode — see the TWO BACKENDS note at module top. Fill in
     `_decode` with the real byte layout once captured from the device.
     """
 
@@ -219,7 +221,7 @@ class ImuHeadTracker:
 
     def __init__(self, axes: ImuAxes | None = None, hidraw_path: str | None = None):
         self.filter = ComplementaryFilter(axes)
-        self.path = hidraw_path or find_rayneo_hidraw()
+        self.path = hidraw_path or find_glasses_hidraw()
         self._fd: int | None = None
         self._last_t: float | None = None
         if self.path:
@@ -238,12 +240,12 @@ class ImuHeadTracker:
         if self._fd is None:
             return None
         try:
-            buf = os.read(self._fd, RayNeoReport.REPORT_LEN)
+            buf = os.read(self._fd, HidGlassesReport.REPORT_LEN)
         except BlockingIOError:
             return None
         except OSError:
             return None
-        decoded = RayNeoReport._decode(buf)
+        decoded = HidGlassesReport._decode(buf)
         if decoded is None:
             return None
         gyro, acc = decoded
@@ -262,24 +264,26 @@ class ImuHeadTracker:
             self._fd = None
 
 
-# Where XRLinuxDriver publishes its fused IMU orientation for clients like
-# breezy-desktop. TODO: confirm the exact path/format when we add Air 4 Pro
-# support upstream (driver builds have used /dev/shm and control files).
+# Where XRLinuxDriver broadcasts its fused IMU orientation (shared-memory IPC,
+# enabled via output_mode=external_only in ~/.xreal_driver_config). breezy-desktop
+# reads the same buffer. TODO: confirm the exact /dev/shm path + struct against
+# the installed driver version at bring-up.
 XRDRIVER_IMU_PATHS: tuple[str, ...] = (
-    "/dev/shm/xr_driver_imu_data",
+    "/dev/shm/xr_driver_imu_data",   # name varies by version — verify
 )
 
 
 class XRDriverHeadTracker:
     """Head tracker that consumes XRLinuxDriver's already-fused orientation.
 
-    Preferred over ImuHeadTracker once XRLinuxDriver supports the Air 4 Pro: the
-    driver does the device decode + sensor fusion (and yaw drift handling), and
+    PRIMARY path for driver-supported glasses (XREAL Air 2 Pro et al.): the
+    driver decodes the device + fuses gyro/accel and broadcasts orientation, and
     we just read euler angles. recenter() is applied as a yaw/pitch offset here.
 
-    DRIVER-GATED: `_read_orientation` is a stub until the driver's IMU output
-    path + format are confirmed during the upstream Air 4 Pro support work.
-    Same `.poll/.recenter/.close/.available` shape as ImuHeadTracker.
+    DRIVER-GATED: `_read_orientation` is a stub until the shared-memory path +
+    struct are confirmed against the installed driver (read /dev/shm + check the
+    driver/breezy source). Same `.poll/.recenter/.close/.available` shape as
+    ImuHeadTracker.
     """
 
     def __init__(self, path: str | None = None):

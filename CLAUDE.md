@@ -231,36 +231,45 @@ cat ~/.config/hyprgaze/calibration.json     # sanity-check a fresh calibration
 
 ## Glasses IMU tracker (`--tracker glasses`)
 
-Alternative input to the webcam: drive head yaw/pitch from AR-glasses 6-axis
-IMU (e.g. RayNeo Air 4 Pro). The whole pipeline downstream of the tracker
-(`Calibration.apply` → filter → dwell → focus) is **source-agnostic**, so the
-IMU is just another producer of `(yaw, pitch)`. Same focus-dwell model — no
-continuous warp (respects the Don't above).
+Alternative input to the webcam: drive head yaw/pitch from an AR-glasses 6-axis
+IMU (target: **XREAL Air 2 Pro**, an XRLinuxDriver-supported pair). The whole
+pipeline downstream of the tracker (`Calibration.apply` → filter → dwell →
+focus) is **source-agnostic**, so the IMU is just another producer of
+`(yaw, pitch)`. Same focus-dwell model — no continuous warp (respects the Don't).
 
-Why it matters here: the daily user is reclined/bedbound. An IMU in the glasses
-works lying down with no webcam line-of-sight to the face, lower latency, and
-no XRLinuxDriver dependency (which doesn't support the Air 4 Pro yet).
+Why it matters here: the daily user is reclined/bedbound. A glasses IMU works
+lying down with no webcam line-of-sight to the face, lower latency, no lighting
+dependence.
+
+Device history: the RayNeo Air 4 Pro was dropped (no accel/magnetometer →
+gyro-only, too drifty) in favour of an XRLinuxDriver-supported pair, which makes
+backend 1 the easy working path.
 
 - `sample.py` — `GazeSample` lives here now (moved out of `tracker.py`) so
   `imu.py` + its tests don't pull in cv2/mediapipe. `tracker.py` re-exports it.
 - `sources.py` — `CameraSource` / `ImuSource`, both yield
   `(GazeSample | None, debug_frame | None)`. `__main__` is identical for both.
 - `imu.py` — two backends:
-  1. `XRDriverHeadTracker` — PREFERRED once we add Air 4 Pro support upstream to
-     wheaney/XRLinuxDriver; reads the driver's fused orientation (no decode here).
+  1. `XRDriverHeadTracker` — PRIMARY for driver-supported glasses; reads
+     XRLinuxDriver's fused orientation over its shared-memory IPC (no decode here).
   2. `ImuHeadTracker` — hidraw + `ComplementaryFilter` (pitch gravity-referenced
-     & absolute; yaw is gyro-integrated → drifts → recenter). Fusion is
-     device-independent and unit-tested in `tests/test_imu.py`.
+     & absolute; yaw gyro-integrated → drifts → recenter). Fallback for
+     unsupported glasses. Fusion is unit-tested in `tests/test_imu.py`.
 - Recenter: `kill -USR1 <pid>` → `source.recenter()`. Wrapper: `bin/hyprgaze-recenter`.
 
-**Hardware-gated bring-up** (do when glasses + Framework are present):
-  1. Find the IMU hidraw: `grep -l HID_ID /sys/class/hidraw/*/device/uevent`;
-     note vid:pid. Set `RAYNEO_IDS` in `imu.py` (or `HYPRGAZE_IMU_IDS=vid:pid`).
-  2. Capture reports: `sudo cat /dev/hidrawN | xxd | head`; fill in
-     `RayNeoReport._decode` (offsets/scales). Reference:
-     github.com/verncat/RayNeo-Air-3S-Pro-OpenVR.
-  3. `hyprgaze run --tracker glasses --debug --dry-run`; tune `ImuAxes` signs
-     (a wrong sign just inverts an axis — obvious on screen).
-  4. Calibrate: angle ranges differ from camera; glasses use the linear default
-     mapping for now (`cal=None` in glasses mode). Affine calibration for the
-     IMU profile is a follow-up.
+**Bring-up — primary path (driver-supported glasses):**
+  1. Install + run XRLinuxDriver; set `output_mode=external_only` in
+     `~/.xreal_driver_config` so it broadcasts IMU over shared memory.
+  2. Confirm the `/dev/shm` path + struct (read it; check driver/breezy source),
+     then implement `XRDriverHeadTracker._read_orientation` (yaw/pitch in rad).
+  3. `hyprgaze run --tracker glasses --debug --dry-run`.
+
+**Bring-up — fallback path (raw hidraw, driver-free / unsupported device):**
+  1. `grep -l HID_ID /sys/class/hidraw/*/device/uevent`; set `GLASSES_IMU_IDS`
+     in `imu.py` (or `HYPRGAZE_IMU_IDS=vid:pid`).
+  2. `sudo cat /dev/hidrawN | xxd | head`; fill in `HidGlassesReport._decode`
+     (int16 gyro/accel triplets + scale). Tune `ImuAxes` signs (wrong sign just
+     inverts an axis — obvious on screen).
+
+Calibration: glasses use the linear default mapping for now (`cal=None` in
+glasses mode); affine calibration for the IMU profile is a follow-up.

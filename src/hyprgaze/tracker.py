@@ -11,7 +11,6 @@ Sign convention:
 from __future__ import annotations
 
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -19,6 +18,8 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import vision as mp_vision
 from mediapipe.tasks.python.core.base_options import BaseOptions
+
+from .sample import GazeSample  # re-exported; defined here historically
 
 
 # Cached model file. Downloaded on first use.
@@ -71,16 +72,6 @@ def _ensure_model() -> str:
         print(f"Downloading face landmarker model to {_MODEL_PATH}...", flush=True)
         urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
     return str(_MODEL_PATH)
-
-
-@dataclass
-class GazeSample:
-    yaw: float          # total (head + eye), radians, + = user's right
-    pitch: float        # + = up
-    head_yaw: float
-    head_pitch: float
-    iris_x: float       # average normalized iris offset, image coords (+ = image-right)
-    iris_y: float
 
 
 class GazeTracker:

@@ -11,7 +11,7 @@ import numpy as np
 
 from .calibration import CALIB_PATH, Calibration, run_calibration, run_zero
 from .filter import OneEuroFilter
-from .tracker import GazeTracker
+from .sources import CameraSource, ImuSource
 from .warp import (
     Monitor,
     ScreenBox,
@@ -55,7 +55,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         flush=True,
     )
 
-    cal = Calibration.load() if not args.no_calibration else None
+    # Glasses (IMU) mode uses head angles directly — the camera calibration
+    # doesn't apply — so fall back to the linear mapping there for now.
+    cal = None if (args.no_calibration or args.tracker == "glasses") else Calibration.load()
     if cal is not None:
         print(
             f"Using calibration from {CALIB_PATH} "
@@ -81,15 +83,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
         float(np.deg2rad(args.pitch_range_deg)),
     )
 
-    cam = cv2.VideoCapture(args.camera, cv2.CAP_V4L2)
-    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cam.set(cv2.CAP_PROP_FPS, 30)
-    if not cam.isOpened():
-        print(f"Failed to open camera index {args.camera}.", file=sys.stderr)
-        return 1
+    if args.tracker == "glasses":
+        source = ImuSource(prefer_driver=not args.imu_no_driver)
+        if not source.ready:
+            print(
+                "Glasses IMU not available. Connect the device and set its path:\n"
+                "  HYPRGAZE_IMU_HIDRAW=/dev/hidrawN   or   HYPRGAZE_IMU_IDS=vid:pid\n"
+                "  (or start XRLinuxDriver). See src/hyprgaze/imu.py for the decode TODO.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Tracker: glasses IMU via {source.kind}. "
+              f"Recenter with: kill -USR1 $(pgrep -f 'hyprgaze run')", flush=True)
+    else:
+        source = CameraSource(args.camera, tracker_cfg)
+        if not source.opened:
+            print(f"Failed to open camera index {args.camera}.", file=sys.stderr)
+            return 1
 
-    tracker = GazeTracker(**tracker_cfg)
     fx = OneEuroFilter(min_cutoff=1.0, beta=0.02)
     fy = OneEuroFilter(min_cutoff=1.0, beta=0.02)
 
@@ -101,6 +112,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGINT, on_sig)
     signal.signal(signal.SIGTERM, on_sig)
+    # SIGUSR1 = recenter (IMU mode): bind a key to `kill -USR1 <pid>`.
+    signal.signal(signal.SIGUSR1, lambda *_: source.recenter())
 
     debug_win: str | None = None
     if args.debug:
@@ -133,14 +146,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     stat_faces = 0
     stat_warps = 0
     while running:
-        ok, frame = cam.read()
-        if not ok:
-            time.sleep(0.01)
-            continue
-
         t = time.monotonic()
+        sample, frame = source.read(t)
+        if sample is None and frame is None:
+            # Camera read failure, or IMU has no fresh data this tick.
+            time.sleep(0.005)
+            continue
         stat_frames += 1
-        sample = tracker.process(frame, t)
 
         win_under: dict | None = None
 
@@ -189,13 +201,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     candidate_class = ""
 
         if debug_win is not None:
+            # IMU mode has no camera frame — draw on a blank canvas.
+            canvas = frame if frame is not None else np.zeros((480, 640, 3), dtype=np.uint8)
             _draw_debug(
-                frame, sample, sx_i, sy_i, box,
+                canvas, sample, sx_i, sy_i, box,
                 win_under, candidate_class,
                 max(0.0, t - candidate_since) if candidate_addr else 0.0,
                 dwell_sec,
             )
-            cv2.imshow(debug_win, frame)
+            cv2.imshow(debug_win, canvas)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
@@ -212,7 +226,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             stat_t = t
             stat_frames = stat_faces = stat_warps = 0
 
-    cam.release()
+    source.close()
     if debug_win is not None:
         cv2.destroyAllWindows()
     return 0
@@ -284,6 +298,10 @@ def _cmd_zero(args: argparse.Namespace) -> int:
 # ------------------------------ CLI ------------------------------
 
 def _add_run_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--tracker", choices=["camera", "glasses"], default="camera",
+                   help="input device: webcam gaze (default) or glasses 6-axis IMU")
+    p.add_argument("--imu-no-driver", action="store_true",
+                   help="glasses mode: bypass XRLinuxDriver, read hidraw directly")
     p.add_argument("--camera", type=int, default=0)
     p.add_argument("--debug", action="store_true",
                    help="show webcam preview with gaze + dwell overlay")

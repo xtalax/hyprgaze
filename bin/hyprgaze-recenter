@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Recenter glasses-IMU head tracking: makes the current head pose screen-center.
+# Live signal (SIGUSR1) to the running daemon — no stop/restart needed. Bind a
+# key to this for `--tracker glasses` mode. (Camera mode uses hyprgaze-zero.)
+set -euo pipefail
+
+if systemctl --user is-active --quiet hyprgaze.service; then
+    systemctl --user kill -s SIGUSR1 hyprgaze.service
+else
+    pkill -USR1 -f 'hyprgaze run' || {
+        notify-send -t 3000 -a hyprgaze "hyprgaze" "Not running — nothing to recenter" \
+            2>/dev/null || true
+        exit 1
+    }
+fi
+notify-send -t 1200 -a hyprgaze "hyprgaze" "Recentered" 2>/dev/null || true
